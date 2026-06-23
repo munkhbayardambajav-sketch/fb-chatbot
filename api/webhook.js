@@ -13,19 +13,13 @@ module.exports = async (req, res) => {
     }
     return res.status(403).send('Forbidden');
   }
-
   if (req.method === 'POST') {
     const body = req.body;
-    if (!body || !body.entry) {
-      return res.status(200).send('EVENT_RECEIVED');
-    }
-
+    if (!body || !body.entry) return res.status(200).send('EVENT_RECEIVED');
     const tasks = [];
-
     for (const entry of body.entry) {
       const pageConfig = pages[entry.id];
       if (!pageConfig) continue;
-
       if (entry.messaging) {
         for (const event of entry.messaging) {
           if (!event.message || event.message.is_echo) continue;
@@ -36,37 +30,26 @@ module.exports = async (req, res) => {
           if (attachments.length > 0 && attachments[0].type === 'image') {
             imageUrl = attachments[0].payload.url;
           }
-
           tasks.push((async () => {
             try {
-              // Build dynamic system prompt with available slots if sheet is configured
               let systemPrompt = pageConfig.systemPrompt;
               if (pageConfig.spreadsheetId) {
                 const slots = await getAvailableSlots(pageConfig.spreadsheetId);
-                if (slots) {
-                  systemPrompt += '\n\nОДООГИЙН СУЛ ЦАГУУД (Google Sheet-ээс):\n' + slots;
-                }
+                if (slots) systemPrompt += '\n\nОДООГИЙН СУЛ ОГНООНУУД (Google Sheet-ээс):\n' + slots;
               }
-
               const reply = await askAI(systemPrompt, userText, imageUrl);
-
-              // Check if AI confirmed a booking: [BOOK:date:time:name:phone]
-              const bookMatch = reply.match(/\[BOOK:([^:]+):([^:]+):([^:]+):([^\]]+)\]/);
+              // Format: [BOOK:YYYY-MM-DD:PHONE:ADVANCE]
+              const bookMatch = reply.match(/\[BOOK:([^:]+):([^:]+):([^\]]*)\]/);
               if (bookMatch && pageConfig.spreadsheetId) {
-                const [, date, time, name, phone] = bookMatch;
-                await bookSlot(pageConfig.spreadsheetId, date, time, name, phone);
+                const [, date, phone, advance] = bookMatch;
+                await bookSlot(pageConfig.spreadsheetId, date, phone, advance);
               }
-
-              // Send reply without the [BOOK:...] marker
               const cleanReply = reply.replace(/\[BOOK:[^\]]+\]/g, '').trim();
               await sendMessage(pageConfig.token, senderId, cleanReply);
-            } catch (err) {
-              console.error('Messenger error:', err);
-            }
+            } catch (err) { console.error('Messenger error:', err); }
           })());
         }
       }
-
       if (entry.changes) {
         for (const change of entry.changes) {
           if (change.field !== 'feed') continue;
@@ -81,7 +64,6 @@ module.exports = async (req, res) => {
         }
       }
     }
-
     await Promise.all(tasks);
     return res.status(200).send('EVENT_RECEIVED');
   }
