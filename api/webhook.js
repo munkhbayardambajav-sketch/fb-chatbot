@@ -12,19 +12,19 @@ module.exports = async (req, res) => {
     }
     return res.status(403).send('Forbidden');
   }
+
   if (req.method === 'POST') {
-    res.status(200).send('EVENT_RECEIVED');
     const body = req.body;
-    console.log('DEBUG body:', JSON.stringify(body));
-    console.log('DEBUG pages keys:', Object.keys(pages));
-    if (!body || !body.entry) return;
+    if (!body || !body.entry) {
+      return res.status(200).send('EVENT_RECEIVED');
+    }
+
+    const tasks = [];
+
     for (const entry of body.entry) {
-      console.log('DEBUG entry.id:', entry.id);
       const pageConfig = pages[entry.id];
-      if (!pageConfig) {
-        console.log('DEBUG no pageConfig for entry.id:', entry.id);
-        continue;
-      }
+      if (!pageConfig) continue;
+
       if (entry.messaging) {
         for (const event of entry.messaging) {
           if (!event.message || event.message.is_echo) continue;
@@ -35,24 +35,30 @@ module.exports = async (req, res) => {
           if (attachments.length > 0 && attachments[0].type === 'image') {
             imageUrl = attachments[0].payload.url;
           }
-          try {
-            const reply = await askAI(pageConfig.systemPrompt, userText, imageUrl);
-            await sendMessage(pageConfig.token, senderId, reply);
-          } catch (err) { console.error('Messenger error:', err); }
+          tasks.push(
+            askAI(pageConfig.systemPrompt, userText, imageUrl)
+              .then(reply => sendMessage(pageConfig.token, senderId, reply))
+              .catch(err => console.error('Messenger error:', err))
+          );
         }
       }
+
       if (entry.changes) {
         for (const change of entry.changes) {
           if (change.field !== 'feed') continue;
           const val = change.value;
           if (val.item !== 'comment' || val.verb !== 'add') continue;
           if (!val.comment_id || !val.message) continue;
-          try {
-            const reply = await askAI(pageConfig.systemPrompt, val.message, null);
-            await replyToComment(pageConfig.token, val.comment_id, reply);
-          } catch (err) { console.error('Comment error:', err); }
+          tasks.push(
+            askAI(pageConfig.systemPrompt, val.message, null)
+              .then(reply => replyToComment(pageConfig.token, val.comment_id, reply))
+              .catch(err => console.error('Comment error:', err))
+          );
         }
       }
     }
+
+    await Promise.all(tasks);
+    return res.status(200).send('EVENT_RECEIVED');
   }
 };
