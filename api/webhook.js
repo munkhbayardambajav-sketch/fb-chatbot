@@ -1,5 +1,6 @@
 const { askAI } = require('../utils/openai');
 const { sendMessage, replyToComment } = require('../utils/messenger');
+const { getAvailableSlots, bookSlot } = require('../utils/sheets');
 const pages = require('../config/pages');
 
 module.exports = async (req, res) => {
@@ -35,11 +36,34 @@ module.exports = async (req, res) => {
           if (attachments.length > 0 && attachments[0].type === 'image') {
             imageUrl = attachments[0].payload.url;
           }
-          tasks.push(
-            askAI(pageConfig.systemPrompt, userText, imageUrl)
-              .then(reply => sendMessage(pageConfig.token, senderId, reply))
-              .catch(err => console.error('Messenger error:', err))
-          );
+
+          tasks.push((async () => {
+            try {
+              // Build dynamic system prompt with available slots if sheet is configured
+              let systemPrompt = pageConfig.systemPrompt;
+              if (pageConfig.spreadsheetId) {
+                const slots = await getAvailableSlots(pageConfig.spreadsheetId);
+                if (slots) {
+                  systemPrompt += '\n\nОДООГИЙН СУЛ ЦАГУУД (Google Sheet-ээс):\n' + slots;
+                }
+              }
+
+              const reply = await askAI(systemPrompt, userText, imageUrl);
+
+              // Check if AI confirmed a booking: [BOOK:date:time:name:phone]
+              const bookMatch = reply.match(/\[BOOK:([^:]+):([^:]+):([^:]+):([^\]]+)\]/);
+              if (bookMatch && pageConfig.spreadsheetId) {
+                const [, date, time, name, phone] = bookMatch;
+                await bookSlot(pageConfig.spreadsheetId, date, time, name, phone);
+              }
+
+              // Send reply without the [BOOK:...] marker
+              const cleanReply = reply.replace(/\[BOOK:[^\]]+\]/g, '').trim();
+              await sendMessage(pageConfig.token, senderId, cleanReply);
+            } catch (err) {
+              console.error('Messenger error:', err);
+            }
+          })());
         }
       }
 
