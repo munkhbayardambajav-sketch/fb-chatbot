@@ -8,50 +8,50 @@ function getAuth() {
   });
 }
 
+// Sheet structure:
+// A: Ogno (Date YYYY-MM-DD)
+// B: Utas (Phone - empty = available)
+// C: Urдchilgaa (Advance payment)
+// D: Busad (Other payments)
+
 async function getAvailableSlots(spreadsheetId) {
   try {
     const auth = await getAuth().getClient();
     const sheets = google.sheets({ version: 'v4', auth });
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Sheet1!A2:C200'
+      range: 'Sheet1!A2:D200'
     });
     const rows = res.data.values || [];
-    const available = rows.filter(row => row[2] === 'Sul' || row[2] === 'Сул');
-    if (available.length === 0) return 'Одоогоор сул цаг байхгүй байна.';
-    return 'Сул цагууд:\n' + available.map(r => r[0] + ' ' + r[1]).join('\n');
-  } catch (err) {
-    console.error('Sheets read error:', err.message);
-    return null;
-  }
+    const available = rows.filter(row => row[0] && (!row[1] || row[1].trim() === ''));
+    if (available.length === 0) return 'Odoogoor sul ognoo baikhgui baina.';
+    return 'Sul ognoonuud:\n' + available.map(r => r[0]).join('\n');
+  } catch (err) { console.error('Sheets read error:', err.message); return null; }
 }
 
-async function bookSlot(spreadsheetId, date, time, name, phone) {
+async function bookSlot(spreadsheetId, date, phone, advance) {
   try {
     const auth = await getAuth().getClient();
     const sheets = google.sheets({ version: 'v4', auth });
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Sheet1!A2:E200'
+      range: 'Sheet1!A2:D200'
     });
     const rows = res.data.values || [];
     for (let i = 0; i < rows.length; i++) {
-      if (rows[i][0] === date && rows[i][1] === time) {
+      if (rows[i][0] === date) {
         const rowNum = i + 2;
         await sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `Sheet1!C${rowNum}:E${rowNum}`,
+          range: `Sheet1!B${rowNum}:C${rowNum}`,
           valueInputOption: 'RAW',
-          requestBody: { values: [['Захиалгатай', name, phone]] }
+          requestBody: { values: [[phone, advance || '']] }
         });
         return true;
       }
     }
     return false;
-  } catch (err) {
-    console.error('Sheets write error:', err.message);
-    return false;
-  }
+  } catch (err) { console.error('Sheets write error:', err.message); return false; }
 }
 
 module.exports = { getAvailableSlots, bookSlot };
