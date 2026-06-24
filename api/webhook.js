@@ -18,28 +18,20 @@ module.exports = async (req, res) => {
   if (req.method === 'POST') {
     const body = req.body;
     if (body.object !== 'page') return res.status(404).send('Not a page event');
-
     res.status(200).send('EVENT_RECEIVED');
 
     const tasks = [];
     for (const entry of body.entry) {
       const pageId     = entry.id;
       const pageConfig = pages[pageId];
-      if (!pageConfig) { console.log('Unknown pageId:', pageId); continue; }
+      console.log('Entry pageId:', pageId, 'found:', !!pageConfig);
+      if (!pageConfig) continue;
 
       if (entry.messaging) {
         for (const event of entry.messaging) {
+          console.log('Event type:', JSON.stringify(Object.keys(event)));
           if (event.message && !event.message.is_echo) {
             tasks.push(handleMessage(event, pageConfig));
-          }
-        }
-      }
-
-      if (entry.changes) {
-        for (const change of entry.changes) {
-          const v = change.value;
-          if (change.field === 'feed' && v.item === 'comment' && v.verb === 'add') {
-            tasks.push(handleComment(v, pageConfig));
           }
         }
       }
@@ -53,13 +45,12 @@ async function handleMessage(event, pageConfig) {
     const senderId = event.sender.id;
     const msg      = event.message;
     let userText = msg.text || '';
+    console.log('handleMessage start, sender:', senderId, 'text:', userText.slice(0,30));
+
     let imageUrl = null;
     if (msg.attachments) {
       for (const att of msg.attachments) {
-        if (att.type === 'image') {
-          imageUrl = att.payload.url;
-          if (!userText) userText = 'Хэрэглэгч зураг илгээлээ.';
-        }
+        if (att.type === 'image') { imageUrl = att.payload.url; if (!userText) userText = 'Зураг.'; }
       }
     }
 
@@ -67,33 +58,42 @@ async function handleMessage(event, pageConfig) {
     let priceImageUrl = null;
 
     if (pageConfig.spreadsheetId) {
+      console.log('Reading sheets...');
       const [settings, slots] = await Promise.all([
         getSheetSettings(pageConfig.spreadsheetId),
         getAvailableSlots(pageConfig.spreadsheetId)
       ]);
+      console.log('Sheets done. systemPrompt from Sheet2:', !!settings.systemPrompt, 'priceUrl:', !!settings.priceImageUrl);
       if (settings.systemPrompt) systemPrompt = settings.systemPrompt;
       if (settings.priceImageUrl) priceImageUrl = settings.priceImageUrl;
       if (slots) systemPrompt += '\n\nОДООГИЙН СУЛ ОГНООНУУД:\n' + slots;
-      if (priceImageUrl) {
-        systemPrompt += '\n\nҮНИЙН ЗУРАГ: Хэрэглэгч үнэ, багц асуухад хариултынхаа эхэнд [SEND_IMAGE] гэж нэм.';
-      }
+      if (priceImageUrl) systemPrompt += '\n\nҮНИЙН ЗУРАГ: Үнэ асуухад [SEND_IMAGE] нэм.';
     }
 
-    systemPrompt += '\n\nЗАХИАЛГА: Огноо баталгаажуулахад эцэст [BOOK:YYYY-MM-DD:УТАС:УРЬДЧИЛГАА] нэм. Жишээ: [BOOK:2026-07-15:99001234:200000]';
+    systemPrompt += '\n\nЗАХИАЛГА: Огноо баталгаажуулахад [BOOK:YYYY-MM-DD:УТАС:УРЬДЧИЛГАА] нэм.';
 
+    console.log('Calling OpenAI...');
     const reply = await askAI(systemPrompt, userText, imageUrl);
-    console.log('AI reply length:', reply && reply.length);
+    console.log('OpenAI replied, length:', reply && reply.length);
 
     if (priceImageUrl && reply.includes('[SEND_IMAGE]')) {
       await sendImageMessage(pageConfig.token, senderId, priceImageUrl);
     }
     const bookMatch = reply.match(/\[BOOK:([^:]+):([^:]+):([^\]]*)]/);
     if (bookMatch && pageConfig.spreadsheetId) {
-      const [, date, phone, advance] = bookMatch;
-      await bookSlot(pageConfig.spreadsheetId, date, phone, advance);
+      await bookSlot(pageConfig.spreadsheetId, bookMatch[1], bookMatch[2], bookMatch[3]);
     }
     const cleanReply = reply.replace(/\[SEND_IMAGE\]/g, '').replace(/\[BOOK:[^\]]+\]/g, '').trim();
-    if (cleanReply) await sendMessage(pageConfig.token, senderId, cleanReply);
+    console.log('Sending reply, length:', cleanReply.length);
+    if (cleanReply) {
+      const fbRes = await fetch('https://graph.facebook.com/v19.0/me/messages?access_token=' + pageConfig.token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient: { id: senderId }, message: { text: cleanReply } })
+      });
+      const fbData = await fbRes.json();
+      console.log('FB send result:', JSON.stringify(fbData).slice(0, 200));
+    }
   } catch (err) {
     console.error('handleMessage error:', err.message, err.stack);
   }
@@ -101,7 +101,7 @@ async function handleMessage(event, pageConfig) {
 
 async function handleComment(commentData, pageConfig) {
   try {
-    const commentId   = commentData.comment_id;
+    const commentId = commentData.comment_id;
     const commentText = commentData.message || '';
     if (!commentId || !commentText) return;
     let systemPrompt = pageConfig.systemPrompt;
